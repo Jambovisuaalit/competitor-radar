@@ -1,10 +1,17 @@
 # competitor-radar
 
+[![CI](https://github.com/Jambovisuaalit/competitor-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/Jambovisuaalit/competitor-radar/actions/workflows/ci.yml)
+[![Weekly Radar](https://github.com/Jambovisuaalit/competitor-radar/actions/workflows/weekly-radar.yml/badge.svg)](https://github.com/Jambovisuaalit/competitor-radar/actions/workflows/weekly-radar.yml)
+
 Python 3.12 CLI for weekly competitor website monitoring with Firecrawl and
 Google Gemini via the official `google-genai` SDK. Source pages are stored as Markdown, compared per URL,
 and summarized in Finnish. First runs describe the current offering.
 
 ## Local setup
+
+Download the ZIP from [GitHub Releases](https://github.com/Jambovisuaalit/competitor-radar/releases),
+extract it and open a terminal in the extracted directory. You can also clone
+this repository. Python 3.12 is required.
 
 ```sh
 python -m venv .venv
@@ -50,7 +57,9 @@ requires human review before using findings for business decisions.
 ## GitHub Actions
 
 Commit this project to a GitHub repository and add repository Actions secrets
-`FIRECRAWL_API_KEY` and `GEMINI_API_KEY`. The workflow runs Mondays at 08:00 UTC
+`FIRECRAWL_API_KEY` and `GEMINI_API_KEY` under
+[Settings → Secrets and variables → Actions](https://github.com/Jambovisuaalit/competitor-radar/settings/secrets/actions).
+Local `.env` values are not uploaded to GitHub automatically. The workflow runs Mondays at 08:00 UTC
 and supports **Run workflow**. Scheduled workflows must exist on the default
 branch; GitHub can delay scheduled starts.
 
@@ -59,7 +68,28 @@ Each run uploads its Markdown reports and history as artifacts, retained for
 from the same branch. Partial failures still upload reports and surviving
 history. No previous artifact means a new baseline. Repository permissions are
 read-only; reports are not committed or pushed. An Actions run has not been
-triggered by creating the local workflow file.
+triggered by creating the local workflow file. Run it manually after adding
+secrets and confirm the run succeeds and contains report and history artifacts.
+Run it a second time to verify history restoration.
+
+CI runs offline tests, a dry run and a source archive build on every push to
+`main` and on pull requests. These checks never need API keys or API credits.
+
+## Distribution
+
+Version: **0.1.0**. The MIT-licensed source ZIP includes the application, example
+configuration, tests and automation. Install Python dependencies after extracting;
+this is a source distribution, not a bundled Python executable or PyPI package.
+
+Build the downloadable ZIP and its SHA-256 checksum locally:
+
+```sh
+python scripts/build_release.py
+```
+
+Artifacts appear under `dist/`. The builder uses an explicit file allowlist;
+local `.env`, API keys, snapshots, reports, caches and virtual environments
+are excluded. GitHub Releases provides the public download channel.
 
 ## API references
 
