@@ -1,7 +1,7 @@
 # competitor-radar
 
 Python 3.12 CLI for weekly competitor website monitoring with Firecrawl and
-OpenAI `gpt-4o-mini`. Source pages are stored as Markdown, compared per URL,
+Google Gemini via the official `google-genai` SDK. Source pages are stored as Markdown, compared per URL,
 and summarized in Finnish. First runs describe the current offering.
 
 ## Local setup
@@ -13,7 +13,10 @@ python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Set `FIRECRAWL_API_KEY` and `OPENAI_API_KEY` in `.env` or your environment.
+Set `FIRECRAWL_API_KEY` and `GEMINI_API_KEY` in `.env` or your environment.
+Create your Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey).
+`GEMINI_MODEL` defaults to `gemini-flash-latest`; set it to a supported model ID
+to pin a specific model instead of following Google's Flash alias.
 Environment values take precedence. Never commit credentials.
 The scraper uses the SDK's `V1FirecrawlApp` export, tested with
 `firecrawl-py==4.54.0`; install the latest SDK when starting from an old environment.
@@ -47,7 +50,7 @@ requires human review before using findings for business decisions.
 ## GitHub Actions
 
 Commit this project to a GitHub repository and add repository Actions secrets
-`FIRECRAWL_API_KEY` and `OPENAI_API_KEY`. The workflow runs Mondays at 08:00 UTC
+`FIRECRAWL_API_KEY` and `GEMINI_API_KEY`. The workflow runs Mondays at 08:00 UTC
 and supports **Run workflow**. Scheduled workflows must exist on the default
 branch; GitHub can delay scheduled starts.
 
@@ -61,8 +64,12 @@ triggered by creating the local workflow file.
 ## API references
 
 - [Firecrawl v1 Python client](https://github.com/firecrawl/firecrawl/blob/main/apps/python-sdk/firecrawl/v1/client.py)
-- [OpenAI structured output and JSON mode](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=chat)
+- [Google Gen AI Python SDK](https://github.com/googleapis/python-genai)
+- [Gemini structured outputs](https://ai.google.dev/gemini-api/docs/structured-output)
 - [GitHub artifact endpoints](https://docs.github.com/en/rest/actions/artifacts)
 
-The JSON mode request works with the requested OpenAI SDK minimum version;
-Pydantic validates the returned object before it reaches the reporter.
+Requests include the `CompetitorInsight` JSON Schema, and strict Pydantic
+validation checks the returned object before it reaches the reporter. HTTP
+timeouts use milliseconds as required by the SDK; transient service failures
+use up to three attempts. Blocked, incomplete, empty or malformed responses
+produce a target error and keep the previous comparison baseline.

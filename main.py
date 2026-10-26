@@ -49,7 +49,8 @@ def main(argv: list[str] | None = None) -> int:
 
     scraper = CompetitorScraper(settings.firecrawl_api_key.get_secret_value(), timeout_ms=int(settings.timeout_seconds * 1000))
     analyzer = RadarAnalyzer(
-        settings.openai_api_key.get_secret_value(), timeout_seconds=settings.timeout_seconds,
+        settings.gemini_api_key.get_secret_value(), model=settings.gemini_model,
+        timeout_seconds=settings.timeout_seconds,
         max_input_chars=settings.max_input_chars,
     )
     entries: list[ReportEntry] = []

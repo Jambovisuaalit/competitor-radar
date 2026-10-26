@@ -47,7 +47,7 @@ jobs:
         id: radar
         env:
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main.py
       - name: Upload report
         if: always() && steps.radar.outcome != 'skipped'

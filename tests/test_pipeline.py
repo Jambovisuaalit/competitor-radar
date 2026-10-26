@@ -3,17 +3,20 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import httpx
+from google import genai
+from google.genai import errors, types
 from rich.console import Console
 
 import main
 from src.analyzer import AnalysisError, CompetitorInsight, RadarAnalyzer
-from src.config import RadarConfig, Settings
+from src.config import RadarConfig, Settings, load_settings
 from src.reporter import ReportEntry, render_report, save_report
 from src.scraper import CompetitorScraper, get_previous_snapshot
 
@@ -23,25 +26,100 @@ def insight() -> CompetitorInsight:
                              pricing_changes=["10 EUR/kk"], feature_updates=["API"], summary="Yrityksille")
 
 
+def gemini_response(text: str, finish_reason: types.FinishReason = types.FinishReason.STOP) -> types.GenerateContentResponse:
+    return types.GenerateContentResponse(candidates=[types.Candidate(
+        finish_reason=finish_reason, content=types.Content(parts=[types.Part(text=text)]),
+    )])
+
+
 class PipelineTests(unittest.TestCase):
+    def test_real_sdk_serializes_schema_and_parses_response_offline(self) -> None:
+        def respond(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
+            self.assertEqual(
+                body["generationConfig"]["responseJsonSchema"], CompetitorInsight.model_json_schema(),
+            )
+            self.assertIn("gemini-flash-latest:generateContent", request.url.path)
+            return httpx.Response(200, json={"candidates": [{
+                "content": {"role": "model", "parts": [{"text": insight().model_dump_json()}]},
+                "finishReason": "STOP",
+            }]})
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
+            client = genai.Client(api_key="test", http_options=types.HttpOptions(httpx_client=transport))
+            with patch("src.analyzer.genai.Client", return_value=client):
+                analyzer = RadarAnalyzer("test")
+                try:
+                    self.assertEqual(analyzer.analyze_diff("10 EUR/kk", None, []), insight())
+                finally:
+                    analyzer.close()
+
     def test_analyzer_validates_response_and_sets_first_run_flag(self) -> None:
         payload = insight().model_dump()
         payload["has_critical_changes"] = True
         client = Mock()
-        client.chat.completions.create.return_value = SimpleNamespace(choices=[
-            SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=json.dumps(payload)))
-        ])
-        with patch("src.analyzer.OpenAI", return_value=client):
-            analyzer = RadarAnalyzer("test")
+        client.models.generate_content.return_value = gemini_response(json.dumps(payload))
+        with patch("src.analyzer.genai.Client", return_value=client) as factory:
+            analyzer = RadarAnalyzer("test", model="gemini-flash-latest", timeout_seconds=12)
             self.assertFalse(analyzer.analyze_diff("10 EUR/kk", None, []).has_critical_changes)
             self.assertTrue(analyzer.analyze_diff("10 EUR/kk", "5 EUR/kk", []).has_critical_changes)
-            client.chat.completions.create.return_value.choices[0].message.content = '{"bad": true}'
+            self.assertEqual(factory.call_args.kwargs["http_options"].timeout, 12000)
+            request = client.models.generate_content.call_args.kwargs
+            self.assertEqual(request["model"], "gemini-flash-latest")
+            self.assertEqual(request["config"].response_json_schema, CompetitorInsight.model_json_schema())
+            self.assertEqual(json.loads(request["contents"])["previous_markdown"], "5 EUR/kk")
+            client.models.generate_content.return_value = gemini_response('{"bad": true}')
             with self.assertRaises(AnalysisError):
                 analyzer.analyze_diff("text", None, [])
             with self.assertRaises(AnalysisError):
                 analyzer.analyze_diff("", None, [])
             with self.assertRaises(AnalysisError):
                 analyzer.analyze_diff("x" * 60001, None, [])
+            analyzer.close()
+            client.close.assert_called_once()
+
+    def test_gemini_rejects_empty_blocked_and_truncated_responses(self) -> None:
+        client = Mock()
+        with patch("src.analyzer.genai.Client", return_value=client):
+            analyzer = RadarAnalyzer("test")
+            for response in (
+                types.GenerateContentResponse(),
+                gemini_response("", types.FinishReason.STOP),
+                gemini_response(insight().model_dump_json(), types.FinishReason.MAX_TOKENS),
+                gemini_response(insight().model_dump_json(), types.FinishReason.SAFETY),
+                gemini_response('{"company_name": 123}'),
+            ):
+                with self.subTest(response=response):
+                    client.models.generate_content.return_value = response
+                    with self.assertRaises(AnalysisError):
+                        analyzer.analyze_diff("text", None, [])
+
+    def test_gemini_api_and_transport_errors_are_safe(self) -> None:
+        client = Mock()
+        with patch("src.analyzer.genai.Client", return_value=client):
+            analyzer = RadarAnalyzer("test")
+            for error in (
+                errors.APIError(429, {"error": {"message": "secret-key", "status": "RESOURCE_EXHAUSTED"}}),
+                httpx.ReadTimeout("secret-key"),
+                httpx.ConnectError("secret-key"),
+            ):
+                client.models.generate_content.side_effect = error
+                with self.assertRaises(AnalysisError) as captured:
+                    analyzer.analyze_diff("text", None, [])
+                self.assertNotIn("secret-key", str(captured.exception))
+
+    def test_settings_require_gemini_key_and_allow_model_override(self) -> None:
+        with patch("src.config.load_dotenv"), patch.dict(os.environ, {
+            "FIRECRAWL_API_KEY": "test-firecrawl", "GEMINI_API_KEY": "test-gemini",
+            "GEMINI_MODEL": "gemini-flash-latest",
+        }, clear=True):
+            settings = load_settings()
+            self.assertEqual(settings.gemini_api_key.get_secret_value(), "test-gemini")
+            self.assertEqual(settings.gemini_model, "gemini-flash-latest")
+            del os.environ["GEMINI_API_KEY"]
+            with self.assertRaisesRegex(ValueError, "GEMINI_API_KEY puuttuu"):
+                load_settings()
 
     def test_snapshots_isolate_pages_and_contain_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch("src.scraper.HISTORY_DIR", Path(tmp)), patch("src.scraper.V1FirecrawlApp") as factory:
@@ -73,7 +151,7 @@ class PipelineTests(unittest.TestCase):
         config = RadarConfig.model_validate({"competitors": [{
             "name": "Example", "urls": ["https://example.com/pricing"], "focus_areas": []
         }]})
-        settings = Settings(firecrawl_api_key="test", openai_api_key="test")
+        settings = Settings(firecrawl_api_key="test", gemini_api_key="test")
         with tempfile.TemporaryDirectory() as tmp, patch("main.load_config", return_value=config), patch("main.load_settings", return_value=settings), patch("src.scraper.HISTORY_DIR", Path(tmp) / "history"), patch("src.scraper.V1FirecrawlApp") as firecrawl, patch("main.RadarAnalyzer") as analyzer, patch("main.save_report", side_effect=lambda entries: save_report(entries, directory=Path(tmp) / "reports")):
             firecrawl.return_value.scrape_url.return_value = {"markdown": "old"}
             analyzer.return_value.analyze_diff.return_value = insight()

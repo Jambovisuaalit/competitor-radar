@@ -1,9 +1,11 @@
-"""Grounded competitor analysis with validated OpenAI JSON responses."""
+"""Grounded competitor analysis with Google's official Gen AI SDK."""
 from __future__ import annotations
 
 import json
 
-from openai import APIError, OpenAI
+import httpx
+from google import genai
+from google.genai import errors, types
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 
@@ -38,12 +40,24 @@ pricing_changes (string array), feature_updates (string array), summary (string)
 
 
 class RadarAnalyzer:
-    def __init__(self, api_key: str, *, timeout_seconds: float = 60, max_input_chars: int = 60000) -> None:
+    def __init__(
+        self, api_key: str, *, model: str = "gemini-flash-latest",
+        timeout_seconds: float = 60, max_input_chars: int = 60000,
+    ) -> None:
         if not api_key.strip():
-            raise ValueError("OPENAI_API_KEY puuttuu")
+            raise ValueError("GEMINI_API_KEY puuttuu")
         if timeout_seconds <= 0 or max_input_chars <= 0:
             raise ValueError("Analysoinnin rajojen pitää olla positiivisia")
-        self._client = OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=2)
+        if not model.strip():
+            raise ValueError("GEMINI_MODEL ei saa olla tyhjä")
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=max(1, int(timeout_seconds * 1000)),
+                retry_options=types.HttpRetryOptions(attempts=3),
+            ),
+        )
+        self._model = model.strip()
         self._max_input_chars = max_input_chars
 
     def close(self) -> None:
@@ -62,27 +76,33 @@ class RadarAnalyzer:
         if len(payload) > self._max_input_chars:
             raise AnalysisError("Materiaali ylittää RADAR_MAX_INPUT_CHARS-rajan; tekstiä ei katkaistu.")
         try:
-            response = self._client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": payload},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=3000,
+            response = self._client.models.generate_content(
+                model=self._model,
+                contents=payload,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_json_schema=CompetitorInsight.model_json_schema(),
+                    temperature=0,
+                    max_output_tokens=8192,
+                ),
             )
-        except APIError:
-            raise AnalysisError("OpenAI-kutsu epäonnistui. Tarkista avain, kiintiö ja yhteys.") from None
-        if not response.choices:
-            raise AnalysisError("OpenAI palautti tyhjän vastauksen.")
-        choice = response.choices[0]
-        if choice.finish_reason != "stop" or not choice.message.content:
-            raise AnalysisError("OpenAI-vastaus jäi kesken tai analyysistä kieltäydyttiin.")
+        except (errors.APIError, httpx.HTTPError, TimeoutError):
+            raise AnalysisError("Gemini-kutsu epäonnistui. Tarkista avain, malli, kiintiö ja yhteys.") from None
+        except (ValidationError, ValueError):
+            raise AnalysisError("Gemini SDK ei voinut käsitellä pyyntöä tai vastausta.") from None
+        if not response.candidates:
+            raise AnalysisError("Gemini palautti tyhjän tai estetyn vastauksen.")
+        candidate = response.candidates[0]
+        if candidate.finish_reason != types.FinishReason.STOP:
+            raise AnalysisError("Gemini-vastaus jäi kesken tai analyysi estettiin.")
+        content = response.text
+        if not content:
+            raise AnalysisError("Gemini palautti tyhjän tekstivastauksen.")
         try:
-            insight = CompetitorInsight.model_validate_json(choice.message.content)
+            insight = CompetitorInsight.model_validate_json(content)
         except ValidationError:
-            raise AnalysisError("OpenAI-vastaus ei vastannut vaadittua rakennetta.") from None
+            raise AnalysisError("Gemini-vastaus ei vastannut vaadittua rakennetta.") from None
         if previous_markdown is None:
             insight.has_critical_changes = False
         return insight
