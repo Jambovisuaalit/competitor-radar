@@ -1,0 +1,14 @@
+{
+  "competitors": [
+    {
+      "name": "Notion",
+      "urls": ["https://www.notion.com/", "https://www.notion.com/pricing"],
+      "focus_areas": ["Hinnoittelu", "AI-ominaisuudet", "Kohdeyleisö"]
+    },
+    {
+      "name": "Linear",
+      "urls": ["https://linear.app/", "https://linear.app/pricing"],
+      "focus_areas": ["Hinnoittelu", "Ominaisuudet", "Arvolupaus"]
+    }
+  ]
+}

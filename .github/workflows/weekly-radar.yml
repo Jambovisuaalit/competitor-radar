@@ -1,0 +1,67 @@
+name: Weekly Competitor Radar
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: weekly-competitor-radar
+  cancel-in-progress: false
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Restore previous history artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RADAR_BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_id=$(gh api --method GET "repos/$GH_REPO/actions/artifacts" \
+            -f name=competitor-radar-history -f per_page=100 \
+            --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.head_branch == env.RADAR_BRANCH)] | sort_by(.created_at) | reverse | .[0].id // empty')
+          if [ -n "$artifact_id" ]; then
+            gh api "repos/$GH_REPO/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/radar-history.zip"
+            mkdir -p history
+            unzip -q "$RUNNER_TEMP/radar-history.zip" -d history
+          else
+            echo "No previous history available; this run establishes a baseline."
+          fi
+      - name: Run radar
+        id: radar
+        env:
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python main.py
+      - name: Upload report
+        if: always() && steps.radar.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: competitor-radar-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/*.md
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Preserve history for the next run
+        if: always() && steps.radar.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: competitor-radar-history
+          path: history/*.md
+          if-no-files-found: warn
+          retention-days: 90
